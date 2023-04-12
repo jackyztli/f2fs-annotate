@@ -1,0 +1,2 @@
+node.c
+1. why flush nat entry using set (f2fs_flush_nat_entries)?
