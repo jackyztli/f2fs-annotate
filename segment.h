@@ -402,6 +402,8 @@ static inline void __seg_info_to_raw_sit(struct seg_entry *se,
 	rs->mtime = cpu_to_le64(se->mtime);
 }
 
+// 遍历一个sit block，将内存中的seg_entry复制给刚从存储介质中读取上来的
+// sit block
 static inline void seg_info_to_sit_page(struct f2fs_sb_info *sbi,
 				struct page *page, unsigned int start)
 {
@@ -792,6 +794,7 @@ static inline pgoff_t current_sit_addr(struct f2fs_sb_info *sbi,
 {
 	struct sit_info *sit_i = SIT_I(sbi);
 	unsigned int offset = SIT_BLOCK_OFFSET(start);
+	// 根据sit基地址找到start对应的sit block
 	block_t blk_addr = sit_i->sit_base_addr + offset;
 
 	f2fs_bug_on(sbi, !valid_main_segno(sbi, start));
@@ -803,6 +806,9 @@ static inline pgoff_t current_sit_addr(struct f2fs_sb_info *sbi,
 #endif
 
 	/* calculate sit block address */
+	// sit_bitmap记录着当前sit block使用的是主区还是备区
+	// 如果sit_bitmap对应为位置是1，表示使用的是备区，所以
+	// 要加上一个sit区的大小
 	if (f2fs_test_bit(offset, sit_i->sit_bitmap))
 		blk_addr += sit_i->sit_blocks;
 
@@ -813,7 +819,10 @@ static inline pgoff_t next_sit_addr(struct f2fs_sb_info *sbi,
 						pgoff_t block_addr)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
+	// 减去基地址的偏移，表示相对地址
 	block_addr -= sit_i->sit_base_addr;
+	// 如果相对地址小于一个sit区的大小，则加上一个sit的大小，
+	// 表示下次使用的是备区，反之亦然
 	if (block_addr < sit_i->sit_blocks)
 		block_addr += sit_i->sit_blocks;
 	else
