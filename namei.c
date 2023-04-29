@@ -739,6 +739,7 @@ out_free_encrypted_link:
 	return err;
 }
 
+// 创建一个目录，提供给vfs层调用
 static int f2fs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 		      struct dentry *dentry, umode_t mode)
 {
@@ -753,10 +754,12 @@ static int f2fs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	if (err)
 		return err;
 
+	// 分配一个inode，一个目录通过一个inode表示
 	inode = f2fs_new_inode(idmap, dir, S_IFDIR | mode, NULL);
 	if (IS_ERR(inode))
 		return PTR_ERR(inode);
 
+	// 设置目录inode的操作集合
 	inode->i_op = &f2fs_dir_inode_operations;
 	inode->i_fop = &f2fs_dir_operations;
 	inode->i_mapping->a_ops = &f2fs_dblock_aops;
@@ -764,6 +767,7 @@ static int f2fs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 
 	set_inode_flag(inode, FI_INC_LINK);
 	f2fs_lock_op(sbi);
+	// 将目录dentry与目录inode关联起来
 	err = f2fs_add_link(dentry, inode);
 	if (err)
 		goto out_fail;
@@ -776,6 +780,7 @@ static int f2fs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	if (IS_DIRSYNC(dir))
 		f2fs_sync_fs(sbi->sb, 1);
 
+	// 考虑做脏数据平衡
 	f2fs_balance_fs(sbi, true);
 	return 0;
 
@@ -785,10 +790,12 @@ out_fail:
 	return err;
 }
 
+// 删除一个目录项
 static int f2fs_rmdir(struct inode *dir, struct dentry *dentry)
 {
 	struct inode *inode = d_inode(dentry);
 
+	// 只有当dir是空目录时，才能删除该目录
 	if (f2fs_empty_dir(inode))
 		return f2fs_unlink(dir, dentry);
 	return -ENOTEMPTY;

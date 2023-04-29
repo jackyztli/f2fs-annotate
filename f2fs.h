@@ -3549,6 +3549,7 @@ static inline int f2fs_add_link(struct dentry *dentry, struct inode *inode)
 {
 	if (fscrypt_is_nokey_name(dentry))
 		return -ENOKEY;
+	// 将子目录节点inode绑定到父节点上
 	return f2fs_do_add_link(d_inode(dentry->d_parent), &dentry->d_name,
 				inode, inode->i_ino, inode->i_mode);
 }

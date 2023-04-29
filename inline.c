@@ -612,6 +612,7 @@ out:
 	return err;
 }
 
+// 添加子目录的dentry到父目录inline区域
 int f2fs_add_inline_entry(struct inode *dir, const struct f2fs_filename *fname,
 			  struct inode *inode, nid_t ino, umode_t mode)
 {
@@ -624,15 +625,20 @@ int f2fs_add_inline_entry(struct inode *dir, const struct f2fs_filename *fname,
 	struct page *page = NULL;
 	int err = 0;
 
+	// 获取父目录的inode page
 	ipage = f2fs_get_node_page(sbi, dir->i_ino);
 	if (IS_ERR(ipage))
 		return PTR_ERR(ipage);
 
+	// 获取inode page的inline区域偏移
 	inline_dentry = inline_data_addr(dir, ipage);
+	// 初始化inline区域的dentry指针
 	make_dentry_ptr_inline(dir, &d, inline_dentry);
 
+	// 在父目录的inline区域找到满足要求的slot空间
 	bit_pos = f2fs_room_for_filename(d.bitmap, slots, d.max);
 	if (bit_pos >= d.max) {
+		// 当前inline区域无法存放子目录，将inline区域转成data block
 		err = do_convert_inline_dir(dir, ipage, inline_dentry);
 		if (err)
 			return err;
@@ -640,6 +646,7 @@ int f2fs_add_inline_entry(struct inode *dir, const struct f2fs_filename *fname,
 		goto out;
 	}
 
+	// 初始化子目录的inode的元数据
 	if (inode) {
 		f2fs_down_write(&F2FS_I(inode)->i_sem);
 		page = f2fs_init_inode_metadata(inode, dir, fname, ipage);

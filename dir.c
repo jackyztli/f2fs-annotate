@@ -112,11 +112,14 @@ static int __f2fs_setup_filename(const struct inode *dir,
 
 	memset(fname, 0, sizeof(*fname));
 
+	// 设置用户指定的名称
 	fname->usr_fname = crypt_name->usr_fname;
+	// 在存储介质中的名称
 	fname->disk_name = crypt_name->disk_name;
 #ifdef CONFIG_FS_ENCRYPTION
 	fname->crypto_buf = crypt_name->crypto_buf;
 #endif
+	// 设置文件名的hash值，用于作目录查找
 	if (crypt_name->is_nokey_name) {
 		/* hash was decoded from the no-key name */
 		fname->hash = cpu_to_le32(crypt_name->hash);
@@ -137,12 +140,14 @@ static int __f2fs_setup_filename(const struct inode *dir,
  * and the f2fs dirhash if needed, then packing all the information about this
  * filename up into a 'struct f2fs_filename'.
  */
+// 设置目录的名称
 int f2fs_setup_filename(struct inode *dir, const struct qstr *iname,
 			int lookup, struct f2fs_filename *fname)
 {
 	struct fscrypt_name crypt_name;
 	int err;
 
+	// TODO：加密相关
 	err = fscrypt_setup_filename(dir, iname, lookup, &crypt_name);
 	if (err)
 		return err;
@@ -205,7 +210,9 @@ static struct f2fs_dir_entry *find_in_block(struct inode *dir,
 
 	dentry_blk = (struct f2fs_dentry_block *)page_address(dentry_page);
 
+	// 根据data block初始化dentry指针
 	make_dentry_ptr_block(dir, &d, dentry_blk);
+	// 寻找目标dentry
 	return f2fs_find_target_dentry(&d, fname, max_slots);
 }
 
@@ -290,22 +297,33 @@ struct f2fs_dir_entry *f2fs_find_target_dentry(const struct f2fs_dentry_ptr *d,
 	int max_len = 0;
 	int res = 0;
 
+	// 每次查找前需要将max_slots清零
 	if (max_slots)
 		*max_slots = 0;
+	// 遍历bitmap，找到每一个子目录；不是每个bit对应一个dentry，可能多个
+	// bit对应一个dentry，根据目录名长度决定。一个slot最多可以存放8bytes，
+	// 目录名最长是255,也即最多占32个slot
 	while (bit_pos < d->max) {
+		// 如果一个bit是0,表示没有被使用
 		if (!test_bit_le(bit_pos, d->bitmap)) {
+			// 继续遍历下一个bit
 			bit_pos++;
+			// 该data block中最大空闲slot数加1
 			max_len++;
 			continue;
 		}
 
+		// 获取子dentry
 		de = &d->dentry[bit_pos];
 
+		// 如果该dentry的名称长度是0,表示有一个目录的名称太长，
+		// 使用该slot继续存储其名称，所以该dentry也被占用了
 		if (unlikely(!de->name_len)) {
 			bit_pos++;
 			continue;
 		}
 
+		// 如果hash值一样，则比较是否找到目录
 		if (de->hash_code == fname->hash) {
 			res = f2fs_match_name(d->inode, fname,
 					      d->filename[bit_pos],
@@ -316,10 +334,12 @@ struct f2fs_dir_entry *f2fs_find_target_dentry(const struct f2fs_dentry_ptr *d,
 				goto found;
 		}
 
+		// 记录当前最大的连续slot数，用于后续目录创建
 		if (max_slots && max_len > *max_slots)
 			*max_slots = max_len;
 		max_len = 0;
 
+		// 直接跳过该目录名对应的slot数
 		bit_pos += GET_DENTRY_SLOTS(le16_to_cpu(de->name_len));
 	}
 
@@ -330,6 +350,7 @@ found:
 	return de;
 }
 
+// 逐层找到目录下的子文件/目录
 static struct f2fs_dir_entry *find_in_level(struct inode *dir,
 					unsigned int level,
 					const struct f2fs_filename *fname,
@@ -344,15 +365,21 @@ static struct f2fs_dir_entry *find_in_level(struct inode *dir,
 	bool room = false;
 	int max_slots;
 
+	// 找到某一层级的bucket数
 	nbucket = dir_buckets(level, F2FS_I(dir)->i_dir_level);
+	// 找到当前level下每个bucket的（data）block数
 	nblock = bucket_blocks(level);
 
+	// 根据hash值找到该子目录/文件可以存放的bucket号
 	bidx = dir_block_index(level, F2FS_I(dir)->i_dir_level,
 			       le32_to_cpu(fname->hash) % nbucket);
+	// 目标bucket的最后一个block号
 	end_block = bidx + nblock;
 
+	// 遍历目标bucket的所有data block，找对应的子目录/文件
 	while (bidx < end_block) {
 		/* no need to allocate new dentry pages to all the indices */
+		// 根据block的逻辑号，找到对应的data block
 		dentry_page = f2fs_find_data_page(dir, bidx, &next_pgofs);
 		if (IS_ERR(dentry_page)) {
 			if (PTR_ERR(dentry_page) == -ENOENT) {
@@ -365,6 +392,8 @@ static struct f2fs_dir_entry *find_in_level(struct inode *dir,
 			}
 		}
 
+		// 在data block中查找子目录/文件，max_slots表示该data block中最大的连续
+		// 空闲slot数，用于后续存放子目录/文件。
 		de = find_in_block(dir, dentry_page, fname, &max_slots);
 		if (IS_ERR(de)) {
 			*res_page = ERR_CAST(de);
@@ -375,6 +404,8 @@ static struct f2fs_dir_entry *find_in_level(struct inode *dir,
 			break;
 		}
 
+		// 如果该data block的最大连续slot数可以存放该子目录/文件，则记录
+		// 当前层级与hash值，后续创建子目录时无需重复查找
 		if (max_slots >= s)
 			room = true;
 		f2fs_put_page(dentry_page, 0);
@@ -390,6 +421,7 @@ static struct f2fs_dir_entry *find_in_level(struct inode *dir,
 	return de;
 }
 
+// 在dir中查找是否存在fname的目录项
 struct f2fs_dir_entry *__f2fs_find_entry(struct inode *dir,
 					 const struct f2fs_filename *fname,
 					 struct page **res_page)
@@ -401,6 +433,7 @@ struct f2fs_dir_entry *__f2fs_find_entry(struct inode *dir,
 
 	*res_page = NULL;
 
+	// 如果父目录树采用inline data区域存储目录项，则在该区域查找目录项
 	if (f2fs_has_inline_dentry(dir)) {
 		de = f2fs_find_in_inline_dir(dir, fname, res_page);
 		goto out;
@@ -409,6 +442,7 @@ struct f2fs_dir_entry *__f2fs_find_entry(struct inode *dir,
 	if (npages == 0)
 		goto out;
 
+	// 获取父目录的深度（最大深度是MAX_DIR_HASH_DEPTH）
 	max_depth = F2FS_I(dir)->i_current_depth;
 	if (unlikely(max_depth > MAX_DIR_HASH_DEPTH)) {
 		f2fs_warn(F2FS_I_SB(dir), "Corrupted max_depth of %lu: %u",
@@ -417,6 +451,7 @@ struct f2fs_dir_entry *__f2fs_find_entry(struct inode *dir,
 		f2fs_i_depth_write(dir, max_depth);
 	}
 
+	// 遍历父目录的深度，找到对应的bucket
 	for (level = 0; level < max_depth; level++) {
 		de = find_in_level(dir, level, fname, res_page);
 		if (de || IS_ERR(*res_page))
@@ -435,6 +470,7 @@ out:
  * and the entry itself. Page is returned mapped and unlocked.
  * Entry is guaranteed to be valid.
  */
+// 根据目录名查找在父目录中的dentry
 struct f2fs_dir_entry *f2fs_find_entry(struct inode *dir,
 			const struct qstr *child, struct page **res_page)
 {
@@ -457,11 +493,13 @@ struct f2fs_dir_entry *f2fs_find_entry(struct inode *dir,
 	return de;
 }
 
+// 获取上一层级目录的dentry信息，也即在父目录中的dentry
 struct f2fs_dir_entry *f2fs_parent_dir(struct inode *dir, struct page **p)
 {
 	return f2fs_find_entry(dir, &dotdot_name, p);
 }
 
+// 通过目录名查找子目录dentry
 ino_t f2fs_inode_by_name(struct inode *dir, const struct qstr *qstr,
 							struct page **page)
 {
@@ -477,6 +515,7 @@ ino_t f2fs_inode_by_name(struct inode *dir, const struct qstr *qstr,
 	return res;
 }
 
+// 将父dentry与inode连接起来
 void f2fs_set_link(struct inode *dir, struct f2fs_dir_entry *de,
 		struct page *page, struct inode *inode)
 {
@@ -493,6 +532,7 @@ void f2fs_set_link(struct inode *dir, struct f2fs_dir_entry *de,
 	f2fs_put_page(page, 1);
 }
 
+// 初始化一个dentry的inode信息
 static void init_dent_inode(struct inode *dir, struct inode *inode,
 			    const struct f2fs_filename *fname,
 			    struct page *ipage)
@@ -529,6 +569,7 @@ static void init_dent_inode(struct inode *dir, struct inode *inode,
 	set_page_dirty(ipage);
 }
 
+// 创建当前目录dentry以及上一层目录的dentry
 void f2fs_do_make_empty_dir(struct inode *inode, struct inode *parent,
 					struct f2fs_dentry_ptr *d)
 {
@@ -542,6 +583,7 @@ void f2fs_do_make_empty_dir(struct inode *inode, struct inode *parent,
 	f2fs_update_dentry(parent->i_ino, parent->i_mode, d, &dotdot, 0, 1);
 }
 
+// 创建空目录
 static int make_empty_dir(struct inode *inode,
 		struct inode *parent, struct page *page)
 {
@@ -566,12 +608,14 @@ static int make_empty_dir(struct inode *inode,
 	return 0;
 }
 
+// 初始化目录inode的元数据
 struct page *f2fs_init_inode_metadata(struct inode *inode, struct inode *dir,
 			const struct f2fs_filename *fname, struct page *dpage)
 {
 	struct page *page;
 	int err;
 
+	// 如果是全新的inode，则分配inode page空间
 	if (is_inode_flag_set(inode, FI_NEW_INODE)) {
 		page = f2fs_new_inode_page(inode);
 		if (IS_ERR(page))
@@ -580,6 +624,7 @@ struct page *f2fs_init_inode_metadata(struct inode *inode, struct inode *dir,
 		if (S_ISDIR(inode->i_mode)) {
 			/* in order to handle error case */
 			get_page(page);
+			// TODO：将当前子目录以空目录形式添加到父dir中？
 			err = make_empty_dir(inode, dir, page);
 			if (err) {
 				lock_page(page);
@@ -588,10 +633,12 @@ struct page *f2fs_init_inode_metadata(struct inode *inode, struct inode *dir,
 			put_page(page);
 		}
 
+		// 初始化acl信息，从父目录处拷贝
 		err = f2fs_init_acl(inode, dir, page, dpage);
 		if (err)
 			goto put_error;
 
+		// 初始化子目录的安全策略，拷贝父目录？
 		err = f2fs_init_security(inode, dir,
 					 fname ? fname->usr_fname : NULL, page);
 		if (err)
@@ -603,17 +650,20 @@ struct page *f2fs_init_inode_metadata(struct inode *inode, struct inode *dir,
 				goto put_error;
 		}
 	} else {
+		// 如果inode不是首次创建，则获取inode的page
 		page = f2fs_get_node_page(F2FS_I_SB(dir), inode->i_ino);
 		if (IS_ERR(page))
 			return page;
 	}
 
+	// 初始化inode的dentry信息
 	init_dent_inode(dir, inode, fname, page);
 
 	/*
 	 * This file should be checkpointed during fsync.
 	 * We lost i_pino from now on.
 	 */
+	// TODO：与fsync相关？
 	if (is_inode_flag_set(inode, FI_INC_LINK)) {
 		if (!S_ISDIR(inode->i_mode))
 			file_lost_pino(inode);
@@ -634,6 +684,7 @@ put_error:
 	return ERR_PTR(err);
 }
 
+// 更新父dentry的元数据信息，在创建或删除子目录时候调用
 void f2fs_update_parent_metadata(struct inode *dir, struct inode *inode,
 						unsigned int current_depth)
 {
@@ -657,14 +708,17 @@ int f2fs_room_for_filename(const void *bitmap, int slots, int max_slots)
 	int bit_start = 0;
 	int zero_start, zero_end;
 next:
+	// 查找第一个可用的slot
 	zero_start = find_next_zero_bit_le(bitmap, max_slots, bit_start);
 	if (zero_start >= max_slots)
 		return max_slots;
 
+	// 基于上面的查找结果，查找下一个可用的slot
 	zero_end = find_next_bit_le(bitmap, max_slots, zero_start);
 	if (zero_end - zero_start >= slots)
 		return zero_start;
 
+	// 继续下一趟查找
 	bit_start = zero_end + 1;
 
 	if (zero_end + 1 >= max_slots)
@@ -672,6 +726,7 @@ next:
 	goto next;
 }
 
+// 判断目录data block是否有足够空间存放fname
 bool f2fs_has_enough_room(struct inode *dir, struct page *ipage,
 			  const struct f2fs_filename *fname)
 {
@@ -686,6 +741,7 @@ bool f2fs_has_enough_room(struct inode *dir, struct page *ipage,
 	return bit_pos < d.max;
 }
 
+// 设置父dentry的子项
 void f2fs_update_dentry(nid_t ino, umode_t mode, struct f2fs_dentry_ptr *d,
 			const struct fscrypt_str *name, f2fs_hash_t name_hash,
 			unsigned int bit_pos)
@@ -700,6 +756,8 @@ void f2fs_update_dentry(nid_t ino, umode_t mode, struct f2fs_dentry_ptr *d,
 	memcpy(d->filename[bit_pos], name->name, name->len);
 	de->ino = cpu_to_le32(ino);
 	set_de_type(de, mode);
+	// 遍历所需要用的slot，将bitmap对应为标记为已使用；如果不是第一个dentry，
+	// 其他dentry的长度都是0
 	for (i = 0; i < slots; i++) {
 		__set_bit_le(bit_pos + i, (void *)d->bitmap);
 		/* avoid wrong garbage data for readdir */
@@ -726,6 +784,8 @@ int f2fs_add_regular_entry(struct inode *dir, const struct f2fs_filename *fname,
 	slots = GET_DENTRY_SLOTS(fname->disk_name.len);
 
 	current_depth = F2FS_I(dir)->i_current_depth;
+	// 在data block逐层查找用，记录可以存放当前子目录的bucket以及
+	// 层级，则直接使用
 	if (F2FS_I(dir)->chash == fname->hash) {
 		level = F2FS_I(dir)->clevel;
 		F2FS_I(dir)->chash = 0;
@@ -742,12 +802,14 @@ start:
 	if (level == current_depth)
 		++current_depth;
 
+	// 在bucket中找到可以存放该子目录dentry的slot
 	nbucket = dir_buckets(level, F2FS_I(dir)->i_dir_level);
 	nblock = bucket_blocks(level);
 
 	bidx = dir_block_index(level, F2FS_I(dir)->i_dir_level,
 				(le32_to_cpu(fname->hash) % nbucket));
 
+	// 遍历block，找到足够的slot空间存放子目录dentry
 	for (block = bidx; block <= (bidx + nblock - 1); block++) {
 		dentry_page = f2fs_get_new_data_page(dir, NULL, block, true);
 		if (IS_ERR(dentry_page))
@@ -763,11 +825,13 @@ start:
 	}
 
 	/* Move to next level to find the empty slot for new dentry */
+	// 如果当前层级无法满足要求，则往下一层级查找
 	++level;
 	goto start;
 add_dentry:
 	f2fs_wait_on_page_writeback(dentry_page, DATA, true, true);
 
+	// 初始化子目录的inode的元数据
 	if (inode) {
 		f2fs_down_write(&F2FS_I(inode)->i_sem);
 		page = f2fs_init_inode_metadata(inode, dir, fname, NULL);
@@ -777,6 +841,7 @@ add_dentry:
 		}
 	}
 
+	// 初始化父dentry指针
 	make_dentry_ptr_block(NULL, &d, dentry_blk);
 	f2fs_update_dentry(ino, mode, &d, &fname->disk_name, fname->hash,
 			   bit_pos);
@@ -793,6 +858,7 @@ add_dentry:
 		f2fs_put_page(page, 1);
 	}
 
+	// 更新父节点的元数据信息
 	f2fs_update_parent_metadata(dir, inode, current_depth);
 fail:
 	if (inode)
@@ -808,9 +874,11 @@ int f2fs_add_dentry(struct inode *dir, const struct f2fs_filename *fname,
 {
 	int err = -EAGAIN;
 
+	// 如果父目录使用inline区域记录dentry，则在父目录的inline区域添加dentry
 	if (f2fs_has_inline_dentry(dir))
 		err = f2fs_add_inline_entry(dir, fname, inode, ino, mode);
 	if (err == -EAGAIN)
+		// 如果父目录inline区域无法存放该子目录dentry，则在data block中存放
 		err = f2fs_add_regular_entry(dir, fname, inode, ino, mode);
 
 	f2fs_update_time(F2FS_I_SB(dir), REQ_TIME);
@@ -829,6 +897,7 @@ int f2fs_do_add_link(struct inode *dir, const struct qstr *name,
 	struct f2fs_dir_entry *de = NULL;
 	int err;
 
+	// 设置目录的名称
 	err = f2fs_setup_filename(dir, name, 0, &fname);
 	if (err)
 		return err;
@@ -840,22 +909,29 @@ int f2fs_do_add_link(struct inode *dir, const struct qstr *name,
 	 * verify on-disk dentry one more time, which guarantees filesystem
 	 * consistency more.
 	 */
+	// TODO：为什么current和task不相同的时候才查找目录项是否存在？如果current和
+	// task相同，直接添加到目录树中了？
 	if (current != F2FS_I(dir)->task) {
+		// 查找父目录树（dir）中是否已经存在该目录项，不允许创建相同的目录项
 		de = __f2fs_find_entry(dir, &fname, &page);
 		F2FS_I(dir)->task = NULL;
 	}
+
+	// 如果子目录已经存在，返回exist错误码
 	if (de) {
 		f2fs_put_page(page, 0);
 		err = -EEXIST;
 	} else if (IS_ERR(page)) {
 		err = PTR_ERR(page);
 	} else {
+		// 如果子目录不存在，则添加子目录dentry
 		err = f2fs_add_dentry(dir, &fname, inode, ino, mode);
 	}
 	f2fs_free_filename(&fname);
 	return err;
 }
 
+// TODO：创建一个临时文件？
 int f2fs_do_tmpfile(struct inode *inode, struct inode *dir)
 {
 	struct page *page;
@@ -876,6 +952,7 @@ fail:
 	return err;
 }
 
+// 更新父目录的信息，去除子目录与父目录的连接关系
 void f2fs_drop_nlink(struct inode *dir, struct inode *inode)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(dir);
@@ -903,6 +980,7 @@ void f2fs_drop_nlink(struct inode *dir, struct inode *inode)
  * It only removes the dentry from the dentry page, corresponding name
  * entry in name page does not need to be touched during deletion.
  */
+// 从父dentry page中删除子dentry
 void f2fs_delete_entry(struct f2fs_dir_entry *dentry, struct page *page,
 					struct inode *dir, struct inode *inode)
 {
@@ -916,18 +994,21 @@ void f2fs_delete_entry(struct f2fs_dir_entry *dentry, struct page *page,
 	if (F2FS_OPTION(F2FS_I_SB(dir)).fsync_mode == FSYNC_MODE_STRICT)
 		f2fs_add_ino_entry(F2FS_I_SB(dir), dir->i_ino, TRANS_DIR_INO);
 
+	// 从inline区域中删除
 	if (f2fs_has_inline_dentry(dir))
 		return f2fs_delete_inline_entry(dentry, page, dir, inode);
 
 	lock_page(page);
 	f2fs_wait_on_page_writeback(page, DATA, true, true);
 
+	// 从待删除的子dentry开始，遍历该子dentry对应的slot数量，将对应bitmap位置清零
 	dentry_blk = page_address(page);
 	bit_pos = dentry - dentry_blk->dentry;
 	for (i = 0; i < slots; i++)
 		__clear_bit_le(bit_pos + i, &dentry_blk->dentry_bitmap);
 
 	/* Let's check and deallocate this dentry page */
+	// 找到下一个
 	bit_pos = find_next_bit_le(&dentry_blk->dentry_bitmap,
 			NR_DENTRY_IN_BLOCK,
 			0);
@@ -952,10 +1033,12 @@ void f2fs_delete_entry(struct f2fs_dir_entry *dentry, struct page *page,
 	dir->i_ctime = dir->i_mtime = current_time(dir);
 	f2fs_mark_inode_dirty_sync(dir, false);
 
+	// 
 	if (inode)
 		f2fs_drop_nlink(dir, inode);
 }
 
+// 判断目录是否为空，在删除目录时，要求空目录才能被删除
 bool f2fs_empty_dir(struct inode *dir)
 {
 	unsigned long bidx = 0;
@@ -964,12 +1047,16 @@ bool f2fs_empty_dir(struct inode *dir)
 	struct f2fs_dentry_block *dentry_blk;
 	unsigned long nblock = dir_blocks(dir);
 
+	// 如果dir使用inline区域，则在inline区域中查找
 	if (f2fs_has_inline_dentry(dir))
 		return f2fs_empty_inline_dir(dir);
 
+	// 遍历dir的所有data block，如果还有目录/文件，则返回false,
+	// 否则返回true
 	while (bidx < nblock) {
 		pgoff_t next_pgofs;
 
+		// 获取目录dentry的data block
 		dentry_page = f2fs_find_data_page(dir, bidx, &next_pgofs);
 		if (IS_ERR(dentry_page)) {
 			if (PTR_ERR(dentry_page) == -ENOENT) {
@@ -985,20 +1072,24 @@ bool f2fs_empty_dir(struct inode *dir)
 			bit_pos = 2;
 		else
 			bit_pos = 0;
+		// 查找下一个被使用的dentry
 		bit_pos = find_next_bit_le(&dentry_blk->dentry_bitmap,
 						NR_DENTRY_IN_BLOCK,
 						bit_pos);
 
 		f2fs_put_page(dentry_page, 0);
 
+		// 如果该dentry_page有还在使用的dentry，则非空
 		if (bit_pos < NR_DENTRY_IN_BLOCK)
 			return false;
 
+		// 继续遍历下一个data block.
 		bidx++;
 	}
 	return true;
 }
 
+// 根据f2fs_dentry_ptr回填dentry信息
 int f2fs_fill_dentries(struct dir_context *ctx, struct f2fs_dentry_ptr *d,
 			unsigned int start_pos, struct fscrypt_str *fstr)
 {
@@ -1014,9 +1105,11 @@ int f2fs_fill_dentries(struct dir_context *ctx, struct f2fs_dentry_ptr *d,
 
 	bit_pos = ((unsigned long)ctx->pos % d->max);
 
+	// 如果需要预读，则通过plug机制预读
 	if (readdir_ra)
 		blk_start_plug(&plug);
 
+	// 遍历bitmap，找到每个dentry
 	while (bit_pos < d->max) {
 		bit_pos = find_next_bit_le(d->bitmap, d->max, bit_pos);
 		if (bit_pos >= d->max)
@@ -1066,12 +1159,14 @@ int f2fs_fill_dentries(struct dir_context *ctx, struct f2fs_dentry_ptr *d,
 			fstr->len = save_len;
 		}
 
+		// 将dentry信息回填
 		if (!dir_emit(ctx, de_name.name, de_name.len,
 					le32_to_cpu(de->ino), d_type)) {
 			err = 1;
 			goto out;
 		}
 
+		// 如果需要预读，则预读子目录的inode
 		if (readdir_ra)
 			f2fs_ra_node_page(sbi, le32_to_cpu(de->ino));
 
@@ -1084,6 +1179,7 @@ out:
 	return err;
 }
 
+// 遍历一个目录下所有目录/文件信息（常见有getdents系列的系统调用）
 static int f2fs_readdir(struct file *file, struct dir_context *ctx)
 {
 	struct inode *inode = file_inode(file);
@@ -1107,15 +1203,18 @@ static int f2fs_readdir(struct file *file, struct dir_context *ctx)
 			goto out;
 	}
 
+	// 如果该目录有inline区域，则从inline区域读取
 	if (f2fs_has_inline_dentry(inode)) {
 		err = f2fs_read_inline_dir(file, ctx, &fstr);
 		goto out_free;
 	}
 
+	// 遍历所有data block，获取该目录下所有目录/文件的信息，注意：非递归遍历
 	for (; n < npages; ctx->pos = n * NR_DENTRY_IN_BLOCK) {
 		pgoff_t next_pgofs;
 
 		/* allow readdir() to be interrupted */
+		// TODO：
 		if (fatal_signal_pending(current)) {
 			err = -ERESTARTSYS;
 			goto out_free;
@@ -1123,10 +1222,12 @@ static int f2fs_readdir(struct file *file, struct dir_context *ctx)
 		cond_resched();
 
 		/* readahead for multi pages of dir */
+		// 预读所有data block？
 		if (npages - n > 1 && !ra_has_index(ra, n))
 			page_cache_sync_readahead(inode->i_mapping, ra, file, n,
 				min(npages - n, (pgoff_t)MAX_DIR_RA_PAGES));
 
+		// 根据逻辑号n获取data block
 		dentry_page = f2fs_find_data_page(inode, n, &next_pgofs);
 		if (IS_ERR(dentry_page)) {
 			err = PTR_ERR(dentry_page);
@@ -1141,8 +1242,10 @@ static int f2fs_readdir(struct file *file, struct dir_context *ctx)
 
 		dentry_blk = page_address(dentry_page);
 
+		// 初始化dentry block指针
 		make_dentry_ptr_block(inode, &d, dentry_blk);
 
+		// 将dentry信息回填
 		err = f2fs_fill_dentries(ctx, &d,
 				n * NR_DENTRY_IN_BLOCK, &fstr);
 		if (err) {
