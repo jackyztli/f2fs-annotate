@@ -373,6 +373,8 @@ static int find_fsync_dnodes(struct f2fs_sb_info *sbi, struct list_head *head,
 	int err = 0;
 
 	/* get node pages in the current segment */
+	// 从上一次CP的点开始，遍历segment,找到已经执行了fsync的
+	// dnode，通过已经fsync的dnode来恢复元数据
 	curseg = CURSEG_I(sbi, CURSEG_WARM_NODE);
 	blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
 
@@ -382,26 +384,37 @@ static int find_fsync_dnodes(struct f2fs_sb_info *sbi, struct list_head *head,
 		if (!f2fs_is_valid_blkaddr(sbi, blkaddr, META_POR))
 			return 0;
 
+		// 获取当前curseg正在使用的node block
 		page = f2fs_get_tmp_page(sbi, blkaddr);
 		if (IS_ERR(page)) {
 			err = PTR_ERR(page);
 			break;
 		}
 
+		// 由于是判断在上一次CP完成之后，已经写入的dnode没有被
+		// 索引，所以本次只需要遍历所有版本号是上一次CP的版本号
+		// 的页（由于只有在写CP的时候才会把版本号递增，所以当前
+		// CP的版本号，就是本次已经写入的dnode版本号）
 		if (!is_recoverable_dnode(page)) {
 			f2fs_put_page(page, 1);
 			break;
 		}
 
+		// 如果page设置了fsync标记，则说明这是一个dnode（inode），
+		// 而且在宕机前已经fsync完成，需要修改索引该node的地方
 		if (!is_fsync_dnode(page))
 			goto next;
 
+		// 从链表中获取该page对应的inode,如果没有，则将inode放入到链表
 		entry = get_fsync_inode(head, ino_of_node(page));
 		if (!entry) {
 			bool quota_inode = false;
 
+			// 如果当前node block是inode类型，并且设置了D标记，如果本次需要恢复，
+			// 则对该inode进行恢复
 			if (!check_only &&
 					IS_INODE(page) && is_dent_dnode(page)) {
+				// 修复该inode
 				err = f2fs_recover_inode_page(sbi, page);
 				if (err) {
 					f2fs_put_page(page, 1);

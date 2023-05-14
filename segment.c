@@ -3427,10 +3427,12 @@ void f2fs_update_device_state(struct f2fs_sb_info *sbi, nid_t ino,
 		return;
 
 	while (1) {
+		// 根据blk地址，获取所属的设备
 		unsigned int devidx = f2fs_target_device_index(sbi, blkaddr);
 		unsigned int blks = FDEV(devidx).end_blk - blkaddr + 1;
 
 		/* update device state for fsync */
+		// 更新设备的状态
 		f2fs_set_dirty_device(sbi, ino, devidx, FLUSH_INO);
 
 		/* update device state for checkpoint */

@@ -26,6 +26,7 @@
 static struct kmem_cache *ino_entry_slab;
 struct kmem_cache *f2fs_inode_entry_slab;
 
+// 设置CP错误标记
 void f2fs_stop_checkpoint(struct f2fs_sb_info *sbi, bool end_io,
 						unsigned char reason)
 {
@@ -34,6 +35,7 @@ void f2fs_stop_checkpoint(struct f2fs_sb_info *sbi, bool end_io,
 	if (!end_io) {
 		f2fs_flush_merged_writes(sbi);
 
+		// 覆盖SB区域？？？
 		f2fs_handle_stop(sbi, reason);
 	}
 }
@@ -41,6 +43,7 @@ void f2fs_stop_checkpoint(struct f2fs_sb_info *sbi, bool end_io,
 /*
  * We guarantee no failure on the returned page.
  */
+// 从page cache获取一个元数据页，上层接口保证该页存在
 struct page *f2fs_grab_meta_page(struct f2fs_sb_info *sbi, pgoff_t index)
 {
 	struct address_space *mapping = META_MAPPING(sbi);
@@ -57,6 +60,7 @@ repeat:
 	return page;
 }
 
+// 从page cache获取一个元数据页，如果该页不存在，则从设备中读取
 static struct page *__get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index,
 							bool is_meta)
 {
@@ -168,6 +172,7 @@ static bool __is_bitmap_valid(struct f2fs_sb_info *sbi, block_t blkaddr,
 	return exist;
 }
 
+// 判断blkaddr地址是否合法
 bool f2fs_is_valid_blkaddr(struct f2fs_sb_info *sbi,
 					block_t blkaddr, int type)
 {
@@ -226,6 +231,7 @@ bool f2fs_is_valid_blkaddr(struct f2fs_sb_info *sbi,
 /*
  * Readahead CP/NAT/SIT/SSA/POR pages
  */
+// 预读元数据区域的nrpages页
 int f2fs_ra_meta_pages(struct f2fs_sb_info *sbi, block_t start, int nrpages,
 							int type, bool sync)
 {
@@ -253,6 +259,7 @@ int f2fs_ra_meta_pages(struct f2fs_sb_info *sbi, block_t start, int nrpages,
 			goto out;
 
 		switch (type) {
+		// 由于NAT/SIT有两个区域，所以需要判断读取的是哪个区域的数据
 		case META_NAT:
 			if (unlikely(blkno >=
 					NAT_BLOCK_OFFSET(NM_I(sbi)->max_nid)))
@@ -299,6 +306,7 @@ out:
 	return blkno - start;
 }
 
+// 读取逻辑号为index的元数据页，并且预读ra_blocks个页
 void f2fs_ra_meta_pages_cond(struct f2fs_sb_info *sbi, pgoff_t index,
 							unsigned int ra_blocks)
 {
@@ -350,12 +358,14 @@ redirty_out:
 	return AOP_WRITEPAGE_ACTIVATE;
 }
 
+// 写入一个元数据页
 static int f2fs_write_meta_page(struct page *page,
 				struct writeback_control *wbc)
 {
 	return __f2fs_write_meta_page(page, wbc, FS_META_IO);
 }
 
+// 写入一个范围的元数据
 static int f2fs_write_meta_pages(struct address_space *mapping,
 				struct writeback_control *wbc)
 {
@@ -377,6 +387,7 @@ static int f2fs_write_meta_pages(struct address_space *mapping,
 
 	trace_f2fs_writepages(mapping->host, wbc, META);
 	diff = nr_pages_to_write(sbi, META, wbc);
+	// 同步写入
 	written = f2fs_sync_meta_pages(sbi, META, wbc->nr_to_write, FS_META_IO);
 	f2fs_up_write(&sbi->cp_global_sem);
 	wbc->nr_to_write = max((long)0, wbc->nr_to_write - written - diff);
@@ -388,6 +399,7 @@ skip_write:
 	return 0;
 }
 
+// 将元数据页下刷（例如SIT/NAT区域等）
 long f2fs_sync_meta_pages(struct f2fs_sb_info *sbi, enum page_type type,
 				long nr_to_write, enum iostat_type io_type)
 {
@@ -405,6 +417,7 @@ long f2fs_sync_meta_pages(struct f2fs_sb_info *sbi, enum page_type type,
 
 	blk_start_plug(&plug);
 
+	// 遍历元数据树中脏页
 	while ((nr_folios = filemap_get_folios_tag(mapping, &index,
 					(pgoff_t)-1,
 					PAGECACHE_TAG_DIRTY, &fbatch))) {
@@ -427,17 +440,21 @@ continue_unlock:
 				folio_unlock(folio);
 				continue;
 			}
+
+			// 如果该元数据非脏（其他任务，可能是bdi已经下刷该页）
 			if (!folio_test_dirty(folio)) {
 				/* someone wrote it for us */
 				goto continue_unlock;
 			}
 
+			// 等待脏回写完成
 			f2fs_wait_on_page_writeback(&folio->page, META,
 					true, true);
 
 			if (!folio_clear_dirty_for_io(folio))
 				goto continue_unlock;
 
+			// 将该脏元数据落盘
 			if (__f2fs_write_meta_page(&folio->page, &wbc,
 						io_type)) {
 				folio_unlock(folio);
@@ -460,13 +477,16 @@ stop:
 	return nwritten;
 }
 
+// 将一个脏元数据置脏
 static bool f2fs_dirty_meta_folio(struct address_space *mapping,
 		struct folio *folio)
 {
 	trace_f2fs_set_page_dirty(&folio->page, META);
 
+	// 如果该元数据非uptodata，则置上该标记
 	if (!folio_test_uptodate(folio))
 		folio_mark_uptodate(folio);
+	// 对该元数据置脏，调整对应的统计数据
 	if (filemap_dirty_folio(mapping, folio)) {
 		inc_page_count(F2FS_M_SB(mapping), F2FS_DIRTY_META);
 		set_page_private_reference(&folio->page);
@@ -490,6 +510,7 @@ static void __add_ino_entry(struct f2fs_sb_info *sbi, nid_t ino,
 	struct inode_management *im = &sbi->im[type];
 	struct ino_entry *e = NULL, *new = NULL;
 
+	// 如果是需要下刷的inode类型，则从ino_root中查找
 	if (type == FLUSH_INO) {
 		rcu_read_lock();
 		e = radix_tree_lookup(&im->ino_root, ino);
@@ -497,6 +518,7 @@ static void __add_ino_entry(struct f2fs_sb_info *sbi, nid_t ino,
 	}
 
 retry:
+	// 如果该inode管理信息不存在，则分配一个
 	if (!e)
 		new = f2fs_kmem_cache_alloc(ino_entry_slab,
 						GFP_NOFS, true, NULL);
@@ -514,14 +536,17 @@ retry:
 		if (unlikely(radix_tree_insert(&im->ino_root, ino, e)))
 			f2fs_bug_on(sbi, 1);
 
+		// 重置inode管理数据
 		memset(e, 0, sizeof(struct ino_entry));
 		e->ino = ino;
 
+		// 添加到inode管理cache中
 		list_add_tail(&e->list, &im->ino_list);
 		if (type != ORPHAN_INO)
 			im->ino_num++;
 	}
 
+	// 如果该inode需要在fsync/CP等流程下刷，则置上对应的设备位（用于多设备场景）
 	if (type == FLUSH_INO)
 		f2fs_set_bit(devidx, (char *)&e->dirty_device);
 
@@ -532,6 +557,7 @@ retry:
 		kmem_cache_free(ino_entry_slab, new);
 }
 
+// 删除一个inode管理数据
 static void __remove_ino_entry(struct f2fs_sb_info *sbi, nid_t ino, int type)
 {
 	struct inode_management *im = &sbi->im[type];
@@ -550,12 +576,14 @@ static void __remove_ino_entry(struct f2fs_sb_info *sbi, nid_t ino, int type)
 	spin_unlock(&im->ino_lock);
 }
 
+// 添加一个inode管理数据
 void f2fs_add_ino_entry(struct f2fs_sb_info *sbi, nid_t ino, int type)
 {
 	/* add new dirty ino entry into list */
 	__add_ino_entry(sbi, ino, 0, type);
 }
 
+// 删除一个inode管理数据
 void f2fs_remove_ino_entry(struct f2fs_sb_info *sbi, nid_t ino, int type)
 {
 	/* remove dirty ino entry from list */
@@ -574,6 +602,7 @@ bool f2fs_exist_written_data(struct f2fs_sb_info *sbi, nid_t ino, int mode)
 	return e ? true : false;
 }
 
+// 释放一个inode管理数据
 void f2fs_release_ino_entry(struct f2fs_sb_info *sbi, bool all)
 {
 	struct ino_entry *e, *tmp;
@@ -593,12 +622,15 @@ void f2fs_release_ino_entry(struct f2fs_sb_info *sbi, bool all)
 	}
 }
 
+// 设置设备的状态为脏，用于fsync/CP流程下刷设备cache
 void f2fs_set_dirty_device(struct f2fs_sb_info *sbi, nid_t ino,
 					unsigned int devidx, int type)
 {
+	// 将脏inode添加到inode管理结构体中
 	__add_ino_entry(sbi, ino, devidx, type);
 }
 
+// 判断一个设备是否为脏（是否有脏inode页）
 bool f2fs_is_dirty_device(struct f2fs_sb_info *sbi, nid_t ino,
 					unsigned int devidx, int type)
 {
@@ -635,6 +667,7 @@ int f2fs_acquire_orphan_inode(struct f2fs_sb_info *sbi)
 	return err;
 }
 
+// 从inode管理cache中释放一个孤儿inode
 void f2fs_release_orphan_inode(struct f2fs_sb_info *sbi)
 {
 	struct inode_management *im = &sbi->im[ORPHAN_INO];
@@ -645,6 +678,7 @@ void f2fs_release_orphan_inode(struct f2fs_sb_info *sbi)
 	spin_unlock(&im->ino_lock);
 }
 
+// 添加一个孤儿inode
 void f2fs_add_orphan_inode(struct inode *inode)
 {
 	/* add new orphan ino entry into list */
@@ -652,12 +686,14 @@ void f2fs_add_orphan_inode(struct inode *inode)
 	f2fs_update_inode_page(inode);
 }
 
+// 移除一个孤儿inode
 void f2fs_remove_orphan_inode(struct f2fs_sb_info *sbi, nid_t ino)
 {
 	/* remove orphan entry from orphan list */
 	__remove_ino_entry(sbi, ino, ORPHAN_INO);
 }
 
+// 恢复一个孤儿inode，其实就是将孤儿inode进行truncate
 static int recover_orphan_inode(struct f2fs_sb_info *sbi, nid_t ino)
 {
 	struct inode *inode;
@@ -703,6 +739,7 @@ err_out:
 	return err;
 }
 
+// 从CP区域中恢复孤儿inode
 int f2fs_recover_orphan_inodes(struct f2fs_sb_info *sbi)
 {
 	block_t start_blk, orphan_blocks, i, j;
@@ -775,6 +812,7 @@ out:
 	return err;
 }
 
+// 写入孤儿inode到CP区域中
 static void write_orphan_inodes(struct f2fs_sb_info *sbi, block_t start_blk)
 {
 	struct list_head *head;
@@ -832,6 +870,7 @@ static void write_orphan_inodes(struct f2fs_sb_info *sbi, block_t start_blk)
 	}
 }
 
+// 计算某个CP pack的crc值
 static __u32 f2fs_checkpoint_chksum(struct f2fs_sb_info *sbi,
 						struct f2fs_checkpoint *ckpt)
 {
@@ -854,12 +893,14 @@ static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 	size_t crc_offset = 0;
 	__u32 crc;
 
+	// 获取CP pack 1的page，从中获取该CP的版本号
 	*cp_page = f2fs_get_meta_page(sbi, cp_addr);
 	if (IS_ERR(*cp_page))
 		return PTR_ERR(*cp_page);
 
 	*cp_block = (struct f2fs_checkpoint *)page_address(*cp_page);
 
+	// 获取CP pack 1中crc的偏移
 	crc_offset = le32_to_cpu((*cp_block)->checksum_offset);
 	if (crc_offset < CP_MIN_CHKSUM_OFFSET ||
 			crc_offset > CP_CHKSUM_OFFSET) {
@@ -868,6 +909,8 @@ static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 		return -EINVAL;
 	}
 
+	// 计算CP pack 1的crc，并与记录在CP pack1中的对比，这样可以保护CP是否
+	// 被篡改
 	crc = f2fs_checkpoint_chksum(sbi, *cp_block);
 	if (crc != cur_cp_crc(*cp_block)) {
 		f2fs_put_page(*cp_page, 1);
@@ -875,6 +918,7 @@ static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 		return -EINVAL;
 	}
 
+	// crc校验通过后，获取cp版本号
 	*version = cur_cp_version(*cp_block);
 	return 0;
 }
@@ -888,6 +932,7 @@ static struct page *validate_checkpoint(struct f2fs_sb_info *sbi,
 	unsigned int cp_blocks;
 	int err;
 
+	// 获取CP pack 1的cp版本号
 	err = get_checkpoint_version(sbi, cp_addr, &cp_block,
 					&cp_page_1, version);
 	if (err)
@@ -895,6 +940,7 @@ static struct page *validate_checkpoint(struct f2fs_sb_info *sbi,
 
 	cp_blocks = le32_to_cpu(cp_block->cp_pack_total_block_count);
 
+	// 校验cp中记录的cp区域所占用的block数是否合法
 	if (cp_blocks > sbi->blocks_per_seg || cp_blocks <= F2FS_CP_PACKS) {
 		f2fs_warn(sbi, "invalid cp_pack_total_block_count:%u",
 			  le32_to_cpu(cp_block->cp_pack_total_block_count));
@@ -903,12 +949,15 @@ static struct page *validate_checkpoint(struct f2fs_sb_info *sbi,
 	pre_version = *version;
 
 	cp_addr += cp_blocks - 1;
+	// 获取CP pack 2的cp版本号
 	err = get_checkpoint_version(sbi, cp_addr, &cp_block,
 					&cp_page_2, version);
 	if (err)
 		goto invalid_cp;
 	cur_version = *version;
 
+	// 如果CP pack 1和CP pack 2的版本号不一致，表示该CP异常，无法保证一致性，需要
+	// 丢弃该CP区域
 	if (cur_version == pre_version) {
 		*version = cur_version;
 		f2fs_put_page(cp_page_2, 1);
@@ -920,6 +969,7 @@ invalid_cp:
 	return NULL;
 }
 
+// 获取一个合法的CP到sbi中，恢复到最新一次的持久化状态，在挂载中调用
 int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_checkpoint *cp_block;
@@ -933,6 +983,7 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	int i;
 	int err;
 
+	// 申请CP管理结构体
 	sbi->ckpt = f2fs_kvzalloc(sbi, array_size(blk_size, cp_blks),
 				  GFP_KERNEL);
 	if (!sbi->ckpt)
@@ -941,14 +992,20 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	 * Finding out valid cp block involves read both
 	 * sets( cp pack 1 and cp pack 2)
 	 */
+	// 获取CP区域1的地址
 	cp_start_blk_no = le32_to_cpu(fsb->cp_blkaddr);
+	// 获取并校验CP区域1的CP是否可用（两个cp block的版本号是否一致）
 	cp1 = validate_checkpoint(sbi, cp_start_blk_no, &cp1_version);
 
 	/* The second checkpoint pack should start at the next segment */
+	// 获取CP区域2的地址
 	cp_start_blk_no += ((unsigned long long)1) <<
 				le32_to_cpu(fsb->log_blocks_per_seg);
+	// 获取并校验CP区域2的CP是否可用（两个cp block的版本号是否一致）
 	cp2 = validate_checkpoint(sbi, cp_start_blk_no, &cp2_version);
 
+	// 如果两个CP都合法，则使用版本号大的那个；如果任一个CP非法，则使用另外
+	// 一个CP，如果两个CP都非法，则出错
 	if (cp1 && cp2) {
 		if (ver_after(cp2_version, cp1_version))
 			cur_page = cp2;
@@ -963,6 +1020,7 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 		goto fail_no_cp;
 	}
 
+	// 将选定的CP拷贝到sbi中，恢复最新一次持久化成功的状态
 	cp_block = (struct f2fs_checkpoint *)page_address(cur_page);
 	memcpy(sbi->ckpt, cp_block, blk_size);
 
@@ -972,6 +1030,7 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 		sbi->cur_cp_pack = 2;
 
 	/* Sanity checking of checkpoint */
+	// 静态校验cp内容的合法性
 	if (f2fs_sanity_check_ckpt(sbi)) {
 		err = -EFSCORRUPTED;
 		goto free_fail_no_cp;
@@ -984,6 +1043,7 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	if (cur_page == cp2)
 		cp_blk_no += 1 << le32_to_cpu(fsb->log_blocks_per_seg);
 
+	// 跳过CP pack 1，将剩下的CP内容拷贝到sbi中
 	for (i = 1; i < cp_blks; i++) {
 		void *sit_bitmap_ptr;
 		unsigned char *ckpt = (unsigned char *)sbi->ckpt;
@@ -1010,6 +1070,7 @@ fail_no_cp:
 	return err;
 }
 
+// 添加一个dirty inode到链表
 static void __add_dirty_inode(struct inode *inode, enum inode_type type)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
@@ -1023,6 +1084,7 @@ static void __add_dirty_inode(struct inode *inode, enum inode_type type)
 	stat_inc_dirty_inode(sbi, type);
 }
 
+// 将inode从dirty list中移除
 static void __remove_dirty_inode(struct inode *inode, enum inode_type type)
 {
 	int flag = (type == DIR_INODE) ? FI_DIRTY_DIR : FI_DIRTY_FILE;
@@ -1035,6 +1097,8 @@ static void __remove_dirty_inode(struct inode *inode, enum inode_type type)
 	stat_dec_dirty_inode(F2FS_I_SB(inode), type);
 }
 
+// 将一个脏inode放入到inode_list中，该接口只处理目录、文件、链接相关的inode，
+// 只有当目录类型或者设置了DATA_FLUSH，才会添加到链表中
 void f2fs_update_dirty_folio(struct inode *inode, struct folio *folio)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
@@ -1053,6 +1117,8 @@ void f2fs_update_dirty_folio(struct inode *inode, struct folio *folio)
 	set_page_private_reference(&folio->page);
 }
 
+// 从inode_list管理链表中移除一个dirty inode，该接口只支持移除
+// 目录、文件、链接相关的inode
 void f2fs_remove_dirty_inode(struct inode *inode)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
@@ -1092,6 +1158,7 @@ retry:
 
 	spin_lock(&sbi->inode_lock[type]);
 
+	// 根据需要下刷的类型获取脏inode列表
 	head = &sbi->inode_list[type];
 	if (list_empty(head)) {
 		spin_unlock(&sbi->inode_lock[type]);
@@ -1100,16 +1167,19 @@ retry:
 				F2FS_DIRTY_DENTS : F2FS_DIRTY_DATA));
 		return 0;
 	}
+	// 获取f2fs的inode管理数据结构
 	fi = list_first_entry(head, struct f2fs_inode_info, dirty_list);
 	inode = igrab(&fi->vfs_inode);
 	spin_unlock(&sbi->inode_lock[type]);
 	if (inode) {
 		unsigned long cur_ino = inode->i_ino;
 
+		// TODO:为什么要记录cp_task
 		if (from_cp)
 			F2FS_I(inode)->cp_task = current;
 		F2FS_I(inode)->wb_task = current;
 
+		// 将挂在inode下的data数据下刷
 		filemap_fdatawrite(inode->i_mapping);
 
 		F2FS_I(inode)->wb_task = NULL;
@@ -1133,13 +1203,17 @@ retry:
 	goto retry;
 }
 
+// 下刷管理相关的元数据
 int f2fs_sync_inode_meta(struct f2fs_sb_info *sbi)
 {
+	// 获取所有脏的元数据inode
 	struct list_head *head = &sbi->inode_list[DIRTY_META];
 	struct inode *inode;
 	struct f2fs_inode_info *fi;
+	// 获取所有脏的元数据inode数量
 	s64 total = get_pages(sbi, F2FS_DIRTY_IMETA);
 
+	// 遍历脏元数据inode
 	while (total--) {
 		if (unlikely(f2fs_cp_error(sbi)))
 			return -EIO;
@@ -1154,6 +1228,7 @@ int f2fs_sync_inode_meta(struct f2fs_sb_info *sbi)
 		inode = igrab(&fi->vfs_inode);
 		spin_unlock(&sbi->inode_lock[DIRTY_META]);
 		if (inode) {
+			// 通过vfs层接口，下刷元数据
 			sync_inode_metadata(inode, 0);
 
 			/* it's on eviction */
@@ -1165,6 +1240,7 @@ int f2fs_sync_inode_meta(struct f2fs_sb_info *sbi)
 	return 0;
 }
 
+// 将sbi中的部分数据更新到cp结构体中，准备写cp block
 static void __prepare_cp_block(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(sbi);
@@ -1178,6 +1254,7 @@ static void __prepare_cp_block(struct f2fs_sb_info *sbi)
 	ckpt->next_free_nid = cpu_to_le32(last_nid);
 }
 
+// TODO：与quota相关
 static bool __need_flush_quota(struct f2fs_sb_info *sbi)
 {
 	bool ret = false;
@@ -1216,10 +1293,14 @@ static int block_operations(struct f2fs_sb_info *sbi)
 	/*
 	 * Let's flush inline_data in dirty node pages.
 	 */
+	// 将inode的dirty inline数据下刷，在fsync时候只下刷了data,
+	// 并没有处理inline data
 	f2fs_flush_inline_data(sbi);
 
 retry_flush_quotas:
+	// 上CP锁，不允许再进行改动管理数据的行为
 	f2fs_lock_all(sbi);
+	// TODO:与quota有关
 	if (__need_flush_quota(sbi)) {
 		int locked;
 
@@ -1241,6 +1322,8 @@ retry_flush_quotas:
 
 retry_flush_dents:
 	/* write all the dirty dentry pages */
+	// 下刷所有脏dentry页，fsync并没有处理dir的data数据，只下刷了文件的data
+	// 数据，在此处将dir的data数据下刷
 	if (get_pages(sbi, F2FS_DIRTY_DENTS)) {
 		f2fs_unlock_all(sbi);
 		err = f2fs_sync_dirty_inodes(sbi, DIR_INODE, true);
@@ -1256,6 +1339,8 @@ retry_flush_dents:
 	 */
 	f2fs_down_write(&sbi->node_change);
 
+	// 将管理元数据下刷（不属于文件、目录、链接的inode，应该就是元数据inode，例如：
+	// acl、attr等等）
 	if (get_pages(sbi, F2FS_DIRTY_IMETA)) {
 		f2fs_up_write(&sbi->node_change);
 		f2fs_unlock_all(sbi);
@@ -1269,6 +1354,8 @@ retry_flush_dents:
 retry_flush_nodes:
 	f2fs_down_write(&sbi->node_write);
 
+	// fsync流程只下刷了普通文件的node page，配合前滚恢复可以保证一致性;
+	// 在CP流程中，将其他类型的noage page下刷，配合后滚恢复保证一致性
 	if (get_pages(sbi, F2FS_DIRTY_NODES)) {
 		f2fs_up_write(&sbi->node_write);
 		atomic_inc(&sbi->wb_sync_req[NODE]);
@@ -1287,17 +1374,20 @@ retry_flush_nodes:
 	 * sbi->node_change is used only for AIO write_begin path which produces
 	 * dirty node blocks and some checkpoint values by block allocation.
 	 */
+	// 将sbi中的部分数据更新到cp结构体中，准备写cp block
 	__prepare_cp_block(sbi);
 	f2fs_up_write(&sbi->node_change);
 	return err;
 }
 
+// 解除阻塞写操作
 static void unblock_operations(struct f2fs_sb_info *sbi)
 {
 	f2fs_up_write(&sbi->node_write);
 	f2fs_unlock_all(sbi);
 }
 
+// 等待CP任务将某个类型的脏页下刷
 void f2fs_wait_on_all_pages(struct f2fs_sb_info *sbi, int type)
 {
 	DEFINE_WAIT(wait);
@@ -1321,6 +1411,7 @@ void f2fs_wait_on_all_pages(struct f2fs_sb_info *sbi, int type)
 	finish_wait(&sbi->cp_wait, &wait);
 }
 
+// 根据cp或者sbi中的信息，设置cp对应的标记位
 static void update_ckpt_flags(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 {
 	unsigned long orphan_num = sbi->im[ORPHAN_INO].ino_num;
@@ -1395,6 +1486,7 @@ static void update_ckpt_flags(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	spin_unlock_irqrestore(&sbi->cp_lock, flags);
 }
 
+// 提交本次CP，也即写入CP pack 2的block
 static void commit_checkpoint(struct f2fs_sb_info *sbi,
 	void *src, block_t blk_addr)
 {
@@ -1407,18 +1499,23 @@ static void commit_checkpoint(struct f2fs_sb_info *sbi,
 	 * some extra time. Therefore, f2fs_update_meta_pages and
 	 * f2fs_sync_meta_pages are combined in this function.
 	 */
+	// 获取cp pack 2的page
 	struct page *page = f2fs_grab_meta_page(sbi, blk_addr);
 	int err;
 
+	// 等待该page下刷完成
 	f2fs_wait_on_page_writeback(page, META, true, true);
 
+	// 将内存中的cp写入page
 	memcpy(page_address(page), src, PAGE_SIZE);
 
+	// 设置page为dirty
 	set_page_dirty(page);
 	if (unlikely(!clear_page_dirty_for_io(page)))
 		f2fs_bug_on(sbi, 1);
 
 	/* writeout cp pack 2 page */
+	// 将cp 2落盘
 	err = __f2fs_write_meta_page(page, &wbc, FS_CP_META_IO);
 	if (unlikely(err && f2fs_cp_error(sbi))) {
 		f2fs_put_page(page, 1);
@@ -1432,11 +1529,13 @@ static void commit_checkpoint(struct f2fs_sb_info *sbi,
 	f2fs_submit_merged_write(sbi, META_FLUSH);
 }
 
+// 获取单个设备已经写入的block数
 static inline u64 get_sectors_written(struct block_device *bdev)
 {
 	return (u64)part_stat_read(bdev, sectors[STAT_WRITE]);
 }
 
+// 获取各个设备已经写入的block数
 u64 f2fs_get_sectors_written(struct f2fs_sb_info *sbi)
 {
 	if (f2fs_is_multi_device(sbi)) {
@@ -1467,9 +1566,11 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	int err;
 
 	/* Flush all the NAT/SIT pages */
+	// 将NAT/SIT的cache下刷（上面下刷的是meta inode）
 	f2fs_sync_meta_pages(sbi, META, LONG_MAX, FS_CP_META_IO);
 
 	/* start to update checkpoint, cp ver is already updated previously */
+	// 将sbi中的信息更新到CP中，包括更新间隔，空闲segment数目，当前各个segment的使用情况等等
 	ckpt->elapsed_time = cpu_to_le64(get_mtime(sbi, true));
 	ckpt->free_segment_count = cpu_to_le32(free_segments(sbi));
 	for (i = 0; i < NR_CURSEG_NODE_TYPE; i++) {
@@ -1488,8 +1589,11 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	}
 
 	/* 2 cp + n data seg summary + orphan inode blocks */
+	// 计算data类型的segment的SSA区域占的block数
 	data_sum_blocks = f2fs_npages_for_summary_flush(sbi, false);
 	spin_lock_irqsave(&sbi->cp_lock, flags);
+	// 如果data类型的segment的SSA区域数小于3，表示进行了压缩，设置对应的标记;
+	// 否则清除对应标记
 	if (data_sum_blocks < NR_CURSEG_DATA_TYPE)
 		__set_ckpt_flags(ckpt, CP_COMPACT_SUM_FLAG);
 	else
@@ -1497,9 +1601,12 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	spin_unlock_irqrestore(&sbi->cp_lock, flags);
 
 	orphan_blocks = GET_ORPHAN_BLOCKS(orphan_num);
+	// 计算cp pack 1的block数目，分别是1个cp pack + orphan_blocks + cp_payload_blks
 	ckpt->cp_pack_start_sum = cpu_to_le32(1 + cp_payload_blks +
 			orphan_blocks);
 
+	// 如果非umount或fastboot触发的CP，无需写入node类型segment的SSA信息（配合前滚恢复可以
+	// 保证一致性？）
 	if (__remain_node_summaries(cpc->reason))
 		ckpt->cp_pack_total_block_count = cpu_to_le32(F2FS_CP_PACKS +
 				cp_payload_blks + data_sum_blocks +
@@ -1510,20 +1617,26 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 				orphan_blocks);
 
 	/* update ckpt flag for checkpoint */
+	// 根据前面写入的信息和sbi中的标记位，设置cp对应标记
 	update_ckpt_flags(sbi, cpc);
 
 	/* update SIT/NAT bitmap */
+	// 将sbi中的SIT/NAT bitmap写入cp pack的sit_nat_version_bitmap，
+	// 下次可以直接恢复对应的管理信息
 	get_sit_bitmap(sbi, __bitmap_ptr(sbi, SIT_BITMAP));
 	get_nat_bitmap(sbi, __bitmap_ptr(sbi, NAT_BITMAP));
 
+	// 计算cp的crc32
 	crc32 = f2fs_checkpoint_chksum(sbi, ckpt);
 	*((__le32 *)((unsigned char *)ckpt +
 				le32_to_cpu(ckpt->checksum_offset)))
 				= cpu_to_le32(crc32);
 
+	// 获取本次写cp的起始地址（两个区域轮流使用）
 	start_blk = __start_cp_next_addr(sbi);
 
 	/* write nat bits */
+	// TODO：此处的作用是啥？
 	if ((cpc->reason & CP_UMOUNT) &&
 			is_set_ckpt_flags(sbi, CP_NAT_BITS_FLAG)) {
 		__u64 cp_ver = cur_cp_version(ckpt);
@@ -1539,50 +1652,64 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	}
 
 	/* write out checkpoint buffer at block 0 */
+	// 写入cp pack 1在CP区域的0号block
 	f2fs_update_meta_page(sbi, ckpt, start_blk++);
 
+	// 写入填充信息，填充信息应该是mkfs.f2fs的时候指定的
 	for (i = 1; i < 1 + cp_payload_blks; i++)
 		f2fs_update_meta_page(sbi, (char *)ckpt + i * F2FS_BLKSIZE,
 							start_blk++);
 
+	// 如果有孤儿inode,则接着写入
 	if (orphan_num) {
 		write_orphan_inodes(sbi, start_blk);
 		start_blk += orphan_blocks;
 	}
 
+	// 写data segment的SSA信息，可能经过了压缩
 	f2fs_write_data_summaries(sbi, start_blk);
 	start_blk += data_sum_blocks;
 
 	/* Record write statistics in the hot node summary */
+	// 记录写入的hot node的summary静态信息
 	kbytes_written = sbi->kbytes_written;
 	kbytes_written += (f2fs_get_sectors_written(sbi) -
 				sbi->sectors_written_start) >> 1;
 	seg_i->journal->info.kbytes_written = cpu_to_le64(kbytes_written);
 
+	// 如果因umount或fastboot触发的CP，则写入node segment的SSA信息
 	if (__remain_node_summaries(cpc->reason)) {
 		f2fs_write_node_summaries(sbi, start_blk);
 		start_blk += NR_CURSEG_NODE_TYPE;
 	}
 
 	/* update user_block_counts */
+	// 更新上一次CP时的系统使用了的block数
 	sbi->last_valid_block_count = sbi->total_valid_block_count;
 	percpu_counter_set(&sbi->alloc_valid_block_count, 0);
 	percpu_counter_set(&sbi->rf_node_block_count, 0);
 
 	/* Here, we have one bio having CP pack except cp pack 2 page */
+	// 将上述写的元数据落盘，除了CP 2
 	f2fs_sync_meta_pages(sbi, META, LONG_MAX, FS_CP_META_IO);
 	/* Wait for all dirty meta pages to be submitted for IO */
 	f2fs_wait_on_all_pages(sbi, F2FS_DIRTY_META);
 
 	/* wait for previous submitted meta pages writeback */
+	// 等待元数据落盘
 	f2fs_wait_on_all_pages(sbi, F2FS_WB_CP_DATA);
 
 	/* flush all device cache */
+	// 对设备下发flush命令，确保已经写入到设备cache中的数据能最终落盘;
+	// 该操作需要在写CP 2前执行，否则可能CP 2先写入了，而其他元数据还没
+	// 写入，导致系统无法保证一致性
 	err = f2fs_flush_device_cache(sbi);
 	if (err)
 		return err;
 
 	/* barrier and flush checkpoint cp pack 2 page if it can */
+	// 提交本次CP，也即写入CP pack 2的block，保证本次CP完整性，只有CP 1和CP 2的版本一致，
+	// 该CP区域才可以用于恢复
 	commit_checkpoint(sbi, ckpt, start_blk);
 	f2fs_wait_on_all_pages(sbi, F2FS_WB_CP_DATA);
 
@@ -1595,8 +1722,10 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 		invalidate_mapping_pages(META_MAPPING(sbi),
 				MAIN_BLKADDR(sbi), MAX_BLKADDR(sbi) - 1);
 
+	// 释放inode管理的缓存
 	f2fs_release_ino_entry(sbi, false);
 
+	// 重置fsync的序列号
 	f2fs_reset_fsync_node_info(sbi);
 
 	clear_sbi_flag(sbi, SBI_IS_DIRTY);
@@ -1607,6 +1736,7 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	sbi->unusable_block_count = 0;
 	spin_unlock(&sbi->stat_lock);
 
+	// 设置下一次CP的区域
 	__set_cp_next_pack(sbi);
 
 	/*
@@ -1622,12 +1752,14 @@ static int do_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	return unlikely(f2fs_cp_error(sbi)) ? -EIO : 0;
 }
 
+// 执行一次写CP操作
 int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 {
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(sbi);
 	unsigned long long ckpt_ver;
 	int err = 0;
 
+	// 只读文件系统或者只读存储介质，则不涉及CP操作
 	if (f2fs_readonly(sbi->sb) || f2fs_hw_is_readonly(sbi))
 		return -EROFS;
 
@@ -1636,6 +1768,7 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 			return 0;
 		f2fs_warn(sbi, "Start checkpoint disabled!");
 	}
+
 	if (cpc->reason != CP_RESIZE)
 		f2fs_down_write(&sbi->cp_global_sem);
 
@@ -1650,15 +1783,18 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 
 	trace_f2fs_write_checkpoint(sbi->sb, cpc->reason, "start block_ops");
 
+	// 阻塞文件系统写操作
 	err = block_operations(sbi);
 	if (err)
 		goto out;
 
 	trace_f2fs_write_checkpoint(sbi->sb, cpc->reason, "finish block_ops");
 
+	// 提交sbi中缓存的bio（可能经过合并了的）
 	f2fs_flush_merged_writes(sbi);
 
 	/* this is the case of multiple fstrims without any changes */
+	// TODO：discard相关
 	if (cpc->reason & CP_DISCARD) {
 		if (!f2fs_exist_trim_candidates(sbi, cpc)) {
 			unblock_operations(sbi);
@@ -1680,10 +1816,13 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	 * Increase the version number so that
 	 * SIT entries and seg summaries are written at correct place
 	 */
+	// 获取当前的CP版本号
 	ckpt_ver = cur_cp_version(ckpt);
+	// CP版本号递增
 	ckpt->checkpoint_ver = cpu_to_le64(++ckpt_ver);
 
 	/* write cached NAT/SIT entries to NAT/SIT area */
+	// 下刷journal中的nat entry cache
 	err = f2fs_flush_nat_entries(sbi, cpc);
 	if (err) {
 		f2fs_err(sbi, "f2fs_flush_nat_entries failed err:%d, stop checkpoint", err);
@@ -1691,22 +1830,29 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 		goto stop;
 	}
 
+	// 下刷journal中的sit entry cache
 	f2fs_flush_sit_entries(sbi, cpc);
 
 	/* save inmem log status */
+	// 将pinned文件sum信息下刷
 	f2fs_save_inmem_curseg(sbi);
 
+	// 写CP
 	err = do_checkpoint(sbi, cpc);
 	if (err) {
 		f2fs_err(sbi, "do_checkpoint failed err:%d, stop checkpoint", err);
 		f2fs_bug_on(sbi, !f2fs_cp_error(sbi));
 		f2fs_release_discard_addrs(sbi);
 	} else {
+		// 将预申请（PRE）的segment释放，在GC场景中，已经搬移了的segment,会暂时设置成
+		// 预申请（PRE）状态，通过CP之后才能真正开始使用，否则可能会丢失修改
 		f2fs_clear_prefree_segments(sbi, cpc);
 	}
 
+	// TODO：恢复pinned文件的sum信息？
 	f2fs_restore_inmem_curseg(sbi);
 stop:
+	// 释放CP锁
 	unblock_operations(sbi);
 	stat_inc_cp_count(sbi->stat_info);
 
@@ -1714,6 +1860,7 @@ stop:
 		f2fs_notice(sbi, "checkpoint: version = %llx", ckpt_ver);
 
 	/* update CP_TIME to trigger checkpoint periodically */
+	// 更新最后一次CP的时间
 	f2fs_update_time(sbi, CP_TIME);
 	trace_f2fs_write_checkpoint(sbi->sb, cpc->reason, "finish checkpoint");
 out:
@@ -1722,6 +1869,7 @@ out:
 	return err;
 }
 
+// 初始化inode缓存管理结构体
 void f2fs_init_ino_entry_info(struct f2fs_sb_info *sbi)
 {
 	int i;
@@ -1740,6 +1888,7 @@ void f2fs_init_ino_entry_info(struct f2fs_sb_info *sbi)
 				F2FS_ORPHANS_PER_BLOCK;
 }
 
+// 创建CP相关的内存分配器
 int __init f2fs_create_checkpoint_caches(void)
 {
 	ino_entry_slab = f2fs_kmem_cache_create("f2fs_ino_entry",
@@ -1755,12 +1904,14 @@ int __init f2fs_create_checkpoint_caches(void)
 	return 0;
 }
 
+// 删除内存分配器
 void f2fs_destroy_checkpoint_caches(void)
 {
 	kmem_cache_destroy(ino_entry_slab);
 	kmem_cache_destroy(f2fs_inode_entry_slab);
 }
 
+// 进行一致性写CP操作
 static int __write_checkpoint_sync(struct f2fs_sb_info *sbi)
 {
 	struct cp_control cpc = { .reason = CP_SYNC, };
@@ -1773,6 +1924,7 @@ static int __write_checkpoint_sync(struct f2fs_sb_info *sbi)
 	return err;
 }
 
+// 写CP并将请求状态置为完成
 static void __checkpoint_and_complete_reqs(struct f2fs_sb_info *sbi)
 {
 	struct ckpt_req_control *cprc = &sbi->cprc_info;
@@ -1781,14 +1933,19 @@ static void __checkpoint_and_complete_reqs(struct f2fs_sb_info *sbi)
 	u64 sum_diff = 0, diff, count = 0;
 	int ret;
 
+	// 获取整个CP请求链表
 	dispatch_list = llist_del_all(&cprc->issue_list);
 	if (!dispatch_list)
 		return;
+	// 对请求链表进行排序
 	dispatch_list = llist_reverse_order(dispatch_list);
 
+	// 进行一次写CP操作
 	ret = __write_checkpoint_sync(sbi);
+	// 已经进行的CP数加1
 	atomic_inc(&cprc->issued_ckpt);
 
+	// 遍历请求链表，将所有请求状态都设置成完成，并返回对应的结果
 	llist_for_each_entry_safe(req, next, dispatch_list, llnode) {
 		diff = (u64)ktime_ms_delta(ktime_get(), req->queue_time);
 		req->ret = ret;
@@ -1797,6 +1954,7 @@ static void __checkpoint_and_complete_reqs(struct f2fs_sb_info *sbi)
 		sum_diff += diff;
 		count++;
 	}
+	// 更新统计
 	atomic_sub(count, &cprc->queued_ckpt);
 	atomic_add(count, &cprc->total_ckpt);
 
@@ -1807,6 +1965,7 @@ static void __checkpoint_and_complete_reqs(struct f2fs_sb_info *sbi)
 	spin_unlock(&cprc->stat_lock);
 }
 
+// 通过CP任务出发一次写CP
 static int issue_checkpoint_thread(void *data)
 {
 	struct f2fs_sb_info *sbi = data;
@@ -1816,19 +1975,23 @@ repeat:
 	if (kthread_should_stop())
 		return 0;
 
+	// 如果写CP任务列表不为空，则进行一次写CP操作
 	if (!llist_empty(&cprc->issue_list))
 		__checkpoint_and_complete_reqs(sbi);
 
+	// 等待再次被唤醒
 	wait_event_interruptible(*q,
 		kthread_should_stop() || !llist_empty(&cprc->issue_list));
 	goto repeat;
 }
 
+// 在本任务进行一次写CP
 static void flush_remained_ckpt_reqs(struct f2fs_sb_info *sbi,
 		struct ckpt_req *wait_req)
 {
 	struct ckpt_req_control *cprc = &sbi->cprc_info;
 
+	// 如果写CP任务列表不为空，则进行一次写CP操作
 	if (!llist_empty(&cprc->issue_list)) {
 		__checkpoint_and_complete_reqs(sbi);
 	} else {
@@ -1838,6 +2001,7 @@ static void flush_remained_ckpt_reqs(struct f2fs_sb_info *sbi,
 	}
 }
 
+// 初始化一个CP请求结构体
 static void init_ckpt_req(struct ckpt_req *req)
 {
 	memset(req, 0, sizeof(struct ckpt_req));
@@ -1846,29 +2010,36 @@ static void init_ckpt_req(struct ckpt_req *req)
 	req->queue_time = ktime_get();
 }
 
+// 下发CP请求
 int f2fs_issue_checkpoint(struct f2fs_sb_info *sbi)
 {
 	struct ckpt_req_control *cprc = &sbi->cprc_info;
 	struct ckpt_req req;
 	struct cp_control cpc;
 
+	// 获取本次CP的原因，如果不是umount或者fastboot，都是为了一致性，也就是CP_SYNC
 	cpc.reason = __get_cp_reason(sbi);
+	// 如果挂载的时候没有指定合并CP，或者CP任务不是由于一致性，则直接在本任务中写CP
 	if (!test_opt(sbi, MERGE_CHECKPOINT) || cpc.reason != CP_SYNC) {
 		int ret;
 
 		f2fs_down_write(&sbi->gc_lock);
+		// 写CP,不走任务的方式
 		ret = f2fs_write_checkpoint(sbi, &cpc);
 		f2fs_up_write(&sbi->gc_lock);
 
 		return ret;
 	}
 
+	// 如果系统没有创建CP任务，则也在本任务中写CP
 	if (!cprc->f2fs_issue_ckpt)
 		return __write_checkpoint_sync(sbi);
 
 	init_ckpt_req(&req);
 
+	// 将一个CP请求放到CP链表，等待CP任务处理
 	llist_add(&req.llnode, &cprc->issue_list);
+	// 增加队列任务计数
 	atomic_inc(&cprc->queued_ckpt);
 
 	/*
@@ -1878,17 +2049,21 @@ int f2fs_issue_checkpoint(struct f2fs_sb_info *sbi)
 	 */
 	smp_mb();
 
+	// 如果CP等待队列非空，唤醒CP任务
 	if (waitqueue_active(&cprc->ckpt_wait_queue))
 		wake_up(&cprc->ckpt_wait_queue);
 
+	// 等待CP任务完成信号
 	if (cprc->f2fs_issue_ckpt)
 		wait_for_completion(&req.wait);
 	else
+		// 如果不支持CP任务，或者已经被停止了，则在本任务下发CP
 		flush_remained_ckpt_reqs(sbi, &req);
 
 	return req.ret;
 }
 
+// 创建CP任务，系统可以该任务异步写CP
 int f2fs_start_ckpt_thread(struct f2fs_sb_info *sbi)
 {
 	dev_t dev = sbi->sb->s_bdev->bd_dev;
@@ -1906,11 +2081,13 @@ int f2fs_start_ckpt_thread(struct f2fs_sb_info *sbi)
 		return err;
 	}
 
+	// 设置任务优先级
 	set_task_ioprio(cprc->f2fs_issue_ckpt, cprc->ckpt_thread_ioprio);
 
 	return 0;
 }
 
+// 停止CP任务
 void f2fs_stop_ckpt_thread(struct f2fs_sb_info *sbi)
 {
 	struct ckpt_req_control *cprc = &sbi->cprc_info;
@@ -1926,10 +2103,12 @@ void f2fs_stop_ckpt_thread(struct f2fs_sb_info *sbi)
 	f2fs_flush_ckpt_thread(sbi);
 }
 
+// 在本任务下发一次CP操作，在CP任务结束、remount等时机调用
 void f2fs_flush_ckpt_thread(struct f2fs_sb_info *sbi)
 {
 	struct ckpt_req_control *cprc = &sbi->cprc_info;
 
+	// 非通过CP任务的方式下发CP，并将对应的队列设置成完成状态
 	flush_remained_ckpt_reqs(sbi, NULL);
 
 	/* Let's wait for the previous dispatched checkpoint. */
@@ -1937,6 +2116,7 @@ void f2fs_flush_ckpt_thread(struct f2fs_sb_info *sbi)
 		io_schedule_timeout(DEFAULT_IO_TIMEOUT);
 }
 
+// 初始化CP管理结构体
 void f2fs_init_ckpt_req_control(struct f2fs_sb_info *sbi)
 {
 	struct ckpt_req_control *cprc = &sbi->cprc_info;

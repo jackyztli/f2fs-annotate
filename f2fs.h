@@ -1632,6 +1632,7 @@ struct f2fs_sb_info {
 
 	/* for node-related operations */
 	struct f2fs_nm_info *nm_info;		/* node manager */
+	// 缓存node区域的页，包括inode,dnode,idnode等，索引号是node id
 	struct inode *node_inode;		/* cache node blocks */
 
 	/* for segment-related operations */
@@ -1649,6 +1650,8 @@ struct f2fs_sb_info {
 	struct f2fs_checkpoint *ckpt;		/* raw checkpoint pointer */
 	int cur_cp_pack;			/* remain current cp pack */
 	spinlock_t cp_lock;			/* for flag in ckpt */
+	// 缓存元数据区域，包括CP、NAT、SIT、SSA、node区域的页（与node区域可能重叠），
+	// 其索引号是block地址
 	struct inode *meta_inode;		/* cache meta blocks */
 	struct f2fs_rwsem cp_global_sem;	/* checkpoint procedure lock */
 	struct f2fs_rwsem cp_rwsem;		/* blocking FS operations */

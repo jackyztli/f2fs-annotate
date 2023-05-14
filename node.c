@@ -3087,6 +3087,7 @@ recover_xnid:
 	return 0;
 }
 
+// 修复一个inode
 int f2fs_recover_inode_page(struct f2fs_sb_info *sbi, struct page *page)
 {
 	struct f2fs_inode *src, *dst;
@@ -3095,13 +3096,16 @@ int f2fs_recover_inode_page(struct f2fs_sb_info *sbi, struct page *page)
 	struct page *ipage;
 	int err;
 
+	// 从存储介质中获取该inode的blkaddr
 	err = f2fs_get_node_info(sbi, ino, &old_ni, false);
 	if (err)
 		return err;
 
+	// 由于该blkaddr是分配给inode的，所以要求其一定是NULL_ADDR
 	if (unlikely(old_ni.blk_addr != NULL_ADDR))
 		return -EINVAL;
 retry:
+	// 获取inode的页
 	ipage = f2fs_grab_cache_page(NODE_MAPPING(sbi), ino, false);
 	if (!ipage) {
 		memalloc_retry_wait(GFP_NOFS);
@@ -3109,22 +3113,29 @@ retry:
 	}
 
 	/* Should not use this inode from free nid list */
+	// 从free_nid_root链表中删除该inode,因为当前处于不可用状态
 	remove_free_nid(sbi, ino);
 
+	// 设置uptodata标记
 	if (!PageUptodate(ipage))
 		SetPageUptodate(ipage);
+	// 填充该inode的page cache信息，由于其就是一个inode,所有nid和ino参数是同一个
 	fill_node_footer(ipage, ino, ino, 0, true);
+	// 设置inode为cold
 	set_cold_node(ipage, false);
 
 	src = F2FS_INODE(page);
 	dst = F2FS_INODE(ipage);
 
+	// 拷贝存储介质中的内容到page cache
 	memcpy(dst, src, offsetof(struct f2fs_inode, i_ext));
+	// TODO：为什么要修改这些信息？？？
 	dst->i_size = 0;
 	dst->i_blocks = cpu_to_le64(1);
 	dst->i_links = cpu_to_le32(1);
 	dst->i_xattr_nid = 0;
 	dst->i_inline = src->i_inline & (F2FS_INLINE_XATTR | F2FS_EXTRA_ATTR);
+	// 重新计算inline信息
 	if (dst->i_inline & F2FS_EXTRA_ATTR) {
 		dst->i_extra_isize = src->i_extra_isize;
 
@@ -3146,13 +3157,17 @@ retry:
 		}
 	}
 
+	// 设置NAT表项信息
 	new_ni = old_ni;
 	new_ni.ino = ino;
 
 	if (unlikely(inc_valid_node_count(sbi, NULL, true)))
 		WARN_ON(1);
+	// TODO:为什么不能直接用old.blkaddr？因为修改了该inode的内容？需要重新
+	// 分配一个node block？
 	set_node_addr(sbi, &new_ni, NEW_ADDR, false);
 	inc_valid_inode_count(sbi);
+	// 置脏，等待回写
 	set_page_dirty(ipage);
 	f2fs_put_page(ipage, 1);
 	return 0;
@@ -3420,6 +3435,7 @@ static int __flush_nat_entry_set(struct f2fs_sb_info *sbi,
 int f2fs_flush_nat_entries(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
+	// CP流程下刷nat entry cache借用了hot data的journal
 	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_HOT_DATA);
 	struct f2fs_journal *journal = curseg->journal;
 	struct nat_entry_set *setvec[SETVEC_SIZE];
